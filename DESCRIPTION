@@ -1,14 +1,19 @@
 Package: BITS
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Fitting Linear Interaction Models
 Version: 1.0.0
-Author: Who wrote it
-Maintainer: The package maintainer <yourself@somewhere.net>
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
-License: What license is it under?
+Authors@R: person("Michael", "Lau", email = "michael.lau@hhu.de",
+  role = c("aut", "cre"), comment = c(ORCID = "0000-0002-5327-8351"))
+Description: A statistical learning procedure that fits linear interaction
+  models by employing gradient boosting and using interaction tree stumps as
+  base learner. Interaction tree stumps are decision tree stumps or simple
+  linear regression models that model either a marginal or an interaction
+  effect. Interaction tree stumps are fitted either using a complete search
+  over all possible interaction terms employing a branch and bound technique
+  for discarding weakly predictive terms or using a hybrid between a greedy and
+  a complete search.
+License: MIT + file LICENSE
 Encoding: UTF-8
-LazyData: true
 RoxygenNote: 7.1.2
 Imports: Rcpp
 LinkingTo: Rcpp, RcppArmadillo
