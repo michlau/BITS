@@ -1,5 +1,6 @@
 // [[Rcpp::depends(RcppArmadillo)]]
-#include <RcppArmadillo.h>
+//// #include <RcppArmadillo.h>
+#include "bits.h"
 // using namespace Rcpp;
 
 // [[Rcpp::export]]
@@ -8,6 +9,40 @@ Rcpp::List customLm(Rcpp::NumericMatrix Xr, Rcpp::NumericVector yr) {
   arma::colvec y(yr.begin(), yr.size(), false);
 
   Rcpp::List lm;
+
+  if(Xr.ncol() == 1) {
+    double ymean = Rcpp::mean(yr);
+    lm["preds"] = Rcpp::NumericVector(Xr.nrow(), ymean);
+    lm["coef"] = Rcpp::NumericVector(1, ymean);
+    lm["deviance"] = (double) (Rcpp::mean(Rcpp::pow(yr - ymean, 2)));
+    lm["success"] = true;
+    return lm;
+  } else if (Xr.ncol() == 2) {
+    int N = Xr.nrow();
+    double ysum = 0;
+    double xsum = 0; double xysum = 0;
+    double xxsum = 0;
+    for(int i = 0; i < N; i++) {
+      ysum += yr[i];
+      xsum += Xr(i, 1);
+      xysum += Xr(i, 1) * yr[i];
+      xxsum += Xr(i, 1) * Xr(i, 1);
+    }
+    double beta1 = (xysum - xsum*ysum/N)/(xxsum - xsum*xsum/N);
+    double beta0 = (ysum - beta1*xsum)/N;
+    Rcpp::NumericVector preds(N, beta0);
+    for(int i = 0; i < N; i++) {
+      preds[i] += beta1 * Xr(i, 1);
+    }
+    lm["preds"] = preds;
+    Rcpp::NumericVector coef = Rcpp::NumericVector::create(beta0, beta1);
+    lm["coef"] = coef;
+    double dev = Rcpp::mean(Rcpp::pow(yr - preds, 2));
+    lm["deviance"] = dev;
+    lm["success"] = Rcpp::traits::is_finite<REALSXP>(beta0) && Rcpp::traits::is_finite<REALSXP>(beta1);
+    return lm;
+  }
+
   arma::colvec coef;
   bool success = arma::solve(coef, X, y, arma::solve_opts::no_approx);
 
@@ -60,7 +95,7 @@ Rcpp::NumericMatrix getAdditiveFeatures(Rcpp::NumericMatrix X, Rcpp::IntegerVect
   return X_tmp;
 }
 
-Rcpp::NumericMatrix cbind1 (Rcpp::NumericVector x, Rcpp::NumericVector y){
+Rcpp::NumericMatrix cbind1 (Rcpp::NumericVector x, Rcpp::NumericVector y) {
   Rcpp::NumericMatrix out(x.size(), 2);
   out( Rcpp::_ , 0 ) = x; out( Rcpp::_ , 1 ) = y;
   return out;

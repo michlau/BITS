@@ -2,13 +2,15 @@
 #' @importFrom glmnet glmnet cv.glmnet relax.glmnet
 #' @importFrom stats as.formula glm step binomial gaussian
 BITS <- function(X, y, Z = NULL,
-                 max.vars = 3, gamma = 0.01,
+                 max.vars = 3, gamma = NULL,
                  modify.vars = FALSE, remove.vars = FALSE,
                  boosting.iter = 50, learning.rate = 0.1,
                  lambda = NULL, alpha = 1, nfolds = 0, nlambda = 100,
                  relax = TRUE, gamma2 = 0.5,
                  adjust.shady.int = TRUE, term.select = "glinternet",
-                 negate = TRUE) {
+                 negate = TRUE,
+                 max.iter = function(p) 4*max.vars*p,
+                 set_vars = NULL, reuse.terms = TRUE) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X)
   N <- nrow(X)
@@ -26,7 +28,6 @@ BITS <- function(X, y, Z = NULL,
     neg.offset <- negate
   }
 
-  models <- list()
   disj <- matrix(NA_integer_, nrow = 0, ncol = max.vars)
   rhoVector <- numeric()
   priorProb <- mean(y)
@@ -39,6 +40,43 @@ BITS <- function(X, y, Z = NULL,
   currentEstimates <- rep(initialModel, N)
   evaluatedWeakLearners <- array(0, c(boosting.iter, N))
 
+  # Old parameters
+  search.algo <- "complete"; optimize <- "correlation"; independent <- FALSE
+
+  if(search.algo == "tree") {
+    X2 <- apply(X, 2, function(x) {
+      m <- max(abs(x))
+      if(m > 1e-10) x/m else x
+    })
+    if(independent) {
+      X3 <- apply(X, 2, function(x) {
+        x <- x - mean(x)
+        m <- max(abs(x))
+        if(m > 1e-10) x/m else x
+      })
+      vv <- apply(X3, 2, var)
+      vv <- vv*(N-1)/N
+      ss <- sqrt(vv)
+      ss <- pmax(1e-10, ss)
+    } else {
+      ss <- 0.0
+    }
+
+    evaluated.terms <- rep(0, boosting.iter) -> possible.terms
+
+    optimize <- as.integer(optimize == "orthogonal")
+
+    max.iter <- max.iter(2*p)
+  } else if(search.algo == "complete") {
+    X2 <- apply(X, 2, function(x) {
+      m <- max(abs(x))
+      if(m > 1e-10) x/m else x
+    })
+    max.iter <- max.iter(2*p)
+    if(max.iter <= 0 && is.null(set_vars)) set_vars <- initializeTerms(X2, neg_offset = rep(1, p), max_vars = max.vars)
+    evaluated.terms <- rep(0, boosting.iter) -> possible.terms
+  }
+
   for(i in 1:boosting.iter) {
     if(y_bin) {
       probs <- 1/(1+exp(-2 * currentEstimates))
@@ -47,14 +85,51 @@ BITS <- function(X, y, Z = NULL,
       gradient <- currentEstimates - y
     }
 
-    model <- greedyFit(X, -gradient, Z = Z, neg_offset = neg.offset,
+    # for(j in 1:nsample) {
+    #   samp <- sample(1:N, N, replace = TRUE)
+    #   if(use.Z) Z.tmp <- Z[samp,,drop=FALSE] else Z.tmp <- NULL
+    #   model <- greedyFit(X[samp,,drop=FALSE], -gradient[samp], Z = Z.tmp, neg_offset = neg.offset, ### HIER WAR ICH
+    #                      max_vars = max.vars, gamma = gamma,
+    #                      force_model = (i == 1), adjust_shady_int = adjust.shady.int,
+    #                      modify_vars = modify.vars, remove_vars = remove.vars)
+    #   pred.complete <- predict(model, X, Z = Z, neg.offset)
+    # }
+    if(search.algo == "greedy") {
+      model <- greedyFit(X, -gradient, Z = Z, neg_offset = neg.offset,
+                         max_vars = max.vars, gamma = gamma,
+                         force_model = (i == 1), adjust_shady_int = adjust.shady.int,
+                         modify_vars = modify.vars, remove_vars = remove.vars)
+    } else if(search.algo == "tree") {
+      grad2 <- gradient - mean(gradient)
+      model <- treeFit(X2, -grad2,
+                       neg_offset = rep(1, p),
                        max_vars = max.vars, gamma = gamma,
+                       optimize = optimize, independent = independent, sds = ss,
                        force_model = (i == 1), adjust_shady_int = adjust.shady.int,
-                       modify_vars = modify.vars, remove_vars = remove.vars)
+                       max_iter = max.iter)
+      model$preds <- model$preds - mean(gradient)
+
+      evaluated.terms[i] <- model$evaluated_terms
+      possible.terms[i] <- model$possible_terms
+    } else if(search.algo == "complete") {
+      grad2 <- gradient - mean(gradient)
+      ###### grad.sd <- sd(gradient) * sqrt((N-1)/N)
+      ###### grad2 <- (gradient - mean(gradient))/grad.sd
+      model <- completeSearch(X2, -grad2,
+                              neg_offset = rep(1, p),
+                              max_vars = max.vars, gamma = gamma,
+                              set_vars_R = set_vars, reuse_terms = reuse.terms, max_iter = max.iter,
+                              force_model = (i == 1), adjust_shady_int = adjust.shady.int)
+      if(reuse.terms) set_vars <- model$set_vars
+      model$preds <- model$preds - mean(gradient)
+      ###### model$preds <- model$preds * grad.sd - mean(gradient)
+
+      evaluated.terms[i] <- model$evaluated_terms
+      possible.terms[i] <- model$possible_terms
+    }
 
     if(sum(!is.na(model$vars)) == 0) break
 
-    models[[i]] <- model
     new.vars <- cbind(model$vars, matrix(NA_integer_, nrow=nrow(model$vars), ncol=max.vars-ncol(model$vars)))
     disj <- rbind(disj, new.vars)
 
@@ -68,10 +143,6 @@ BITS <- function(X, y, Z = NULL,
   }
 
   cat("Boosting done\n")
-
-  # disj <- boosting(X, y, Z = Z, y_bin = y_bin, max_vars = max.vars, gamma = gamma,
-  #                  boosting_iter = boosting.iter, learning_rate = learning.rate,
-  #                  adjust_shady_int = adjust.shady.int)$disj
 
   disj <- dontNegateSinglePredictors(disj)
   disj.unique <- unique(t(apply(disj, 1, sort.int, method = "quick", na.last = TRUE)))
@@ -157,16 +228,22 @@ BITS <- function(X, y, Z = NULL,
   ret <- list(lin.mod = lin.mod, disj = disj.unique, s = s, main.disj = main.disj, Z.disj = Z.disj,
               y_bin = y_bin, neg.offset = neg.offset,
               gamma2 = gamma2) ###
+  if(search.algo != "greedy") {
+    ret$evaluated.terms <- evaluated.terms; ret$possible.terms <- possible.terms
+  }
+  if(search.algo == "complete" && reuse.terms) {
+    ret$set_vars <- set_vars
+  }
   class(ret) <- "BITS"
   return(ret)
 }
 
 #' @export
-predict.intstump <- function(model, X, Z = NULL) {
+predict.intstump <- function(model, X, Z = NULL, neg.offset) {
   coef <- model$model$coef
   if(length(coef) == 1) return(rep(coef, nrow(X)))
   vars <- model$vars
-  dm <- cbind(1, getDesignMatrix(X, Z, matrix(vars, nrow=1)))
+  dm <- cbind(1, getDesignMatrix(X, Z, vars, neg.offset)) # matrix(vars, nrow=1)
   return(as.numeric(dm %*% matrix(coef, ncol=1)))
 }
 
@@ -205,12 +282,15 @@ dontNegateSinglePredictors <- function(disj) {
   disj
 }
 
-#' @export
 greedy.fit <- function(X, y, Z = NULL, neg.offset, max_vars = 3, gamma = 0.001, force_model = FALSE) {
   greedyFit(X, y, Z, neg.offset, max_vars, gamma, force_model)
 }
 
-#' @export
+ITS <- function(X, y, neg_offset, max_vars, gamma, max_iter, adjust_shady_int) {
+  completeSearch(X, y, neg_offset, max_vars, gamma, NULL, FALSE, max_iter,
+                 TRUE, adjust_shady_int)
+}
+
 #' @importFrom stats lm.fit predict.glm gaussian binomial
 greedy.fit.old <- function(X, y, Z = NULL, max.vars = 3, gamma = 0.01, force.model = FALSE) {
   p <- ncol(X); N <- nrow(X)
@@ -780,7 +860,7 @@ getPredictorNames <- function(real_disj, sort_conj = FALSE) {
 #' @export
 gammaPath <- function(X, y, Z = NULL,
                       gmin = function(gmax) 0.0001 * gmax,
-                      steps = 20) {
+                      steps = 50) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X)
   N <- nrow(X)
@@ -798,25 +878,192 @@ gammaPath <- function(X, y, Z = NULL,
     initialModel <- priorProb
     gradient <- initialModel - y
   }
-  mse.0 <- mean((gradient - mean(gradient))^2)
 
-  model <- greedyFit(X, -gradient, Z = Z, neg_offset = rep(0, p),
-                     max_vars = 1, gamma = 0, force_model = FALSE)
-  mse.1 <- model$score
+  # Old parameters
+  search.algo <- "complete"; optimize <- "correlation"
 
-  # Get gmax such that
-  # mse.0 = mse.1 + gmax
-  gmax <- mse.0 - mse.1
+  if(search.algo == "greedy") {
+    mse.0 <- mean((gradient - mean(gradient))^2)
+    model <- greedyFit(X, -gradient, Z = Z, neg_offset = rep(0, p),
+                       max_vars = 1, gamma = 0, force_model = FALSE)
+    mse.1 <- model$score
+    # Get gmax such that
+    # mse.0 = mse.1 + gmax
+    gmax <- mse.0 - mse.1
+  } else if(search.algo == "tree") {
+    X2 <- apply(X, 2, function(x) {
+      m <- max(abs(x))
+      if(m > 1e-10) x/m else x
+    })
+    ss <- 0.0
+
+    optimize <- as.integer(optimize == "orthogonal")
+
+    grad2 <- gradient - mean(gradient)
+    model <- treeFit(X2, -grad2,
+                     neg_offset = rep(0, p),
+                     max_vars = 1, gamma = 0,
+                     optimize = optimize, independent = FALSE, sds = ss,
+                     force_model = FALSE, adjust_shady_int = FALSE)
+    # Get gmax such that 0 = corr.1 - gmax, since null model has zero correlation
+    gmax <- model$corr
+  } else if(search.algo == "complete") {
+    X2 <- apply(X, 2, function(x) {
+      m <- max(abs(x))
+      if(m > 1e-10) x/m else x
+    })
+    grad2 <- gradient - mean(gradient)
+    model <- completeSearch(X2, -grad2,
+                            neg_offset = rep(0, p),
+                            max_vars = 1, gamma = 0,
+                            set_vars_R = NULL, reuse_terms = FALSE, max_iter = -1,
+                            force_model = FALSE, adjust_shady_int = FALSE)
+    # Get gmax such that 0 = corr.1 - gmax, since null model has zero correlation
+    gmax <- model$corr
+  }
+
   if(gmax <= 0) gmax <- 0.1
 
   gmin <- gmin(gmax)
-  exp(seq(log(gmin), log(gmax), length.out = steps))
+  exp(seq(log(gmax), log(gmin), length.out = steps))
+}
+
+compareNA <- function(v1, v2) {
+  same <- (v1 == v2) | (is.na(v1) & is.na(v2))
+  same[is.na(same)] <- FALSE
+  return(same)
+}
+
+combine.custom <- function(a, b) {
+  depth <- function(this,thisdepth=0){
+    if(!is.list(this)){
+      return(thisdepth)
+    }else{
+      return(max(unlist(lapply(this,depth,thisdepth=thisdepth+1))))
+    }
+  }
+
+  if(depth(a) > depth(b)) {
+    res <- c(a, list(b))
+  } else {
+    res <- c(list(a), list(b))
+  }
+  return(res)
+}
+
+ParMethod <- function(x) if(x) {foreach::`%dopar%`} else {foreach::`%do%`}
+
+#' @export
+BITS.complete <- function(X, y,
+                          max.vars = 3, gamma = NULL,
+                          modify.vars = FALSE, remove.vars = FALSE,
+                          boosting.iter = 50, learning.rate = 0.1,
+                          lambda = NULL, alpha = 1, nfolds = 0, nlambda = 100,
+                          relax = TRUE, gamma2 = 0.5,
+                          adjust.shady.int = TRUE, term.select = "glinternet",
+                          negate = TRUE,
+                          max.iter = function(p) -1,
+                          reuse.terms = TRUE, parallel = TRUE,
+                          gmin = function(gmax) 0.0001 * gmax, gsteps = 50) {
+  X <- as.matrix(X)
+  X2 <- apply(X, 2, function(x) {
+    m <- max(abs(x))
+    if(m > 1e-10) x/m else x
+  })
+  if(is.null(gamma)) gamma <- gammaPath(X, y, Z = NULL, gmin = gmin, steps = gsteps,
+                                        search.algo = "complete", optimize = "correlation")
+  gamma <- sort(gamma, decreasing = TRUE)
+
+  max.iter.FUN <- max.iter
+  max.iter <- max.iter.FUN(2*ncol(X))
+  if(max.iter <= 0)
+    set_vars <- initializeTerms(X2, neg_offset = rep(1, ncol(X)), max_vars = max.vars)
+  else
+    set_vars <- NULL
+
+  null.model <- BITS(X, y,
+                     max.vars = max.vars, gamma = 0,
+                     modify.vars = modify.vars, remove.vars = remove.vars,
+                     boosting.iter = boosting.iter, learning.rate = learning.rate,
+                     lambda = lambda, alpha = alpha, nfolds = nfolds, nlambda = nlambda,
+                     relax = relax, gamma2 = gamma2,
+                     adjust.shady.int = adjust.shady.int, term.select = term.select,
+                     negate = negate, search.algo = "complete", max.iter = max.iter.FUN,
+                     set_vars = set_vars, reuse.terms = reuse.terms)
+  if(reuse.terms) set_vars <- null.model$set_vars
+  null.model$gamma <- 0
+
+  if(reuse.terms || max.iter <= 0 || foreach::getDoParWorkers() == 1) parallel <- FALSE
+  `%op%` <- ParMethod(parallel)
+  should.break <- length(gamma) + 1
+  models <- foreach::foreach(i=1:length(gamma), .combine=combine.custom, .export = c()) %op%
+  {
+    if(i < should.break) {
+      model <- BITS(X, y,
+                    max.vars = max.vars, gamma = gamma[i],
+                    modify.vars = modify.vars, remove.vars = remove.vars,
+                    boosting.iter = boosting.iter, learning.rate = learning.rate,
+                    lambda = lambda, alpha = alpha, nfolds = nfolds, nlambda = nlambda,
+                    relax = relax, gamma2 = gamma2,
+                    adjust.shady.int = adjust.shady.int, term.select = term.select,
+                    negate = negate, search.algo = "complete", max.iter = max.iter.FUN,
+                    set_vars = set_vars, reuse.terms = reuse.terms)
+      if(reuse.terms) set_vars <- model$set_vars
+      model$gamma <- gamma[i]
+
+      if(i > 1 && all(dim(model$disj) == dim(null.model$disj)) && all(compareNA(model$disj, null.model$disj))) should.break <- i
+      model
+    }
+  }
+  models <- models[lengths(models) != 0]
+  models <- models[order(unlist(lapply(models, function(x) x$gamma)), decreasing = TRUE)]
+  models[[length(models) + 1]] <- null.model
+
+  class(models) <- "BITS.list"
+  models
+}
+
+#' @export
+get.ideal.model <- function(models, X, y, choose = "min", metric = "dev") {
+  if(!inherits(models, "BITS.list")) stop("The first argument needs to be an object of class 'BITS.list' (generated using BITS.complete)!")
+  y_bin <- setequal(unique(y), c(0, 1))
+  per.observation <- !y_bin || metric == "dev"
+  if(y_bin) y <- as.integer(y)
+
+  val.res <- data.frame()
+
+  for(i in 1:length(models)) {
+    model <- models[[i]]
+    lambda <- model$lin.mod$lambda
+    preds <- predict(model, X)
+
+    for(j in 1:length(lambda)) {
+      if(per.observation) {
+        scores <- calcScorePerObservation(as.numeric(preds[,j]), y, y_bin)
+        m <- mean(scores)
+        se <- sd(scores)/sqrt(length(scores))
+        val.res <- rbind(val.res, data.frame(g = model$gamma, s = lambda[j], score = m, se = se, score.plus.1se = m + se))
+      } else {
+        m <- 1 - logicDT::calcAUC(as.numeric(preds[,j]), y)
+        val.res <- rbind(val.res, data.frame(g = model$gamma, s = lambda[j], score = m))
+      }
+    }
+  }
+
+  min.ind <- which.min(val.res$score)
+  if(choose == "1se" && per.observation) {
+    max.val <- val.res$score.plus.1se[min.ind]
+    min.ind <- min(which(val.res$score <= max.val))
+  }
+
+  best.g <- val.res$g[min.ind]; best.s <- val.res$s[min.ind]
+  return(list(val.res = val.res, best.g = best.g, best.s = best.s))
 }
 
 #' @export
 cv.BITS <- function(X, y, Z = NULL,
                     nfolds = 5, choose = "min",
-                    gmin = function(gmax) 0.0001 * gmax, steps = 20,
+                    gmin = function(gmax) 0.0001 * gmax, steps = 50,
                     ...) {
   N <- nrow(X)
   y_bin <- setequal(unique(y), c(0, 1))
@@ -875,6 +1122,28 @@ cv.BITS <- function(X, y, Z = NULL,
   cv <- list(best.gamma = best.gamma, best.s = best.s, cv.res = cv.res)
   model$cv <- cv
   return(model)
+}
+
+#' @export plot.val.performance
+plot.val.performance <- function(val.res) {
+  library(ggplot2)
+  p <- ggplot(val.res, aes(x=log(s), y=score, color = log(g), group = g)) +
+    geom_line() +
+    theme_bw() +
+    xlab(expression(log(lambda))) + ylab("Score") +
+    scale_colour_gradient(name = expression(log(gamma)), low="#00B4EF", high="#FF6C91")
+  p
+}
+
+#' @export
+calcNoPossibleTerms <- function(p, max.vars, negate = TRUE) {
+  if(!negate) return(sum(choose(p, 1:max.vars)))
+  tmp <- sum(choose(2*p, 1:max.vars))
+  tmp - sum(p*choose(2*(p-1), 0:(max.vars-2)))
+}
+
+memory.test <- function() {
+  memoryTest()
 }
 
 #' @useDynLib BITS
