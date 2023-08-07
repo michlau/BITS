@@ -488,21 +488,28 @@ get.included.vars <- function(model) {
 }
 
 #' @export
-get.ideal.penalty <- function(model, X, y, Z = NULL, choose = "min") {
+get.ideal.penalty <- function(model, X, y, Z = NULL, choose = "min", metric = "auc") {
   lambda <- model$lin.mod$lambda
   preds <- predict(model, X, Z = Z)
   y_bin <- setequal(unique(y), c(0, 1))
+  per.observation <- !y_bin || metric == "dev"
+  if(y_bin) y <- as.integer(y)
 
   val.res <- data.frame()
   for(i in 1:length(lambda)) {
-    scores <- calcScorePerObservation(as.numeric(preds[,i]), y, y_bin)
-    m <- mean(scores)
-    se <- sd(scores)/sqrt(length(scores))
-    val.res <- rbind(val.res, data.frame(s = lambda[i], score = m, se = se, score.plus.1se = m + se))
+    if(per.observation) {
+      scores <- calcScorePerObservation(as.numeric(preds[,i]), y, y_bin)
+      m <- mean(scores)
+      se <- sd(scores)/sqrt(length(scores))
+      val.res <- rbind(val.res, data.frame(s = lambda[i], score = m, se = se, score.plus.1se = m + se))
+    } else {
+      m <- 1 - logicDT::calcAUC(as.numeric(preds[,i]), y)
+      val.res <- rbind(val.res, data.frame(s = lambda[i], score = m))
+    }
   }
 
   min.ind <- min(which(val.res$score == min(val.res$score)))
-  if(choose == "1se") {
+  if(choose == "1se" && per.observation) {
     max.val <- val.res$score.plus.1se[min.ind]
     min.ind <- min(which(val.res$score <= max.val))
   }
@@ -859,7 +866,7 @@ getPredictorNames <- function(real_disj, sort_conj = FALSE) {
 
 #' @export
 gammaPath <- function(X, y, Z = NULL,
-                      gmin = function(gmax) 0.0001 * gmax,
+                      gmin = function(gmax) 0.001 * gmax,
                       steps = 50) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X)
@@ -964,14 +971,13 @@ BITS.complete <- function(X, y,
                           negate = TRUE,
                           max.iter = function(p) -1,
                           reuse.terms = TRUE, parallel = TRUE,
-                          gmin = function(gmax) 0.0001 * gmax, gsteps = 50) {
+                          gmin = function(gmax) 0.001 * gmax, gsteps = 50) {
   X <- as.matrix(X)
   X2 <- apply(X, 2, function(x) {
     m <- max(abs(x))
     if(m > 1e-10) x/m else x
   })
-  if(is.null(gamma)) gamma <- gammaPath(X, y, Z = NULL, gmin = gmin, steps = gsteps,
-                                        search.algo = "complete", optimize = "correlation")
+  if(is.null(gamma)) gamma <- gammaPath(X, y, Z = NULL, gmin = gmin, steps = gsteps)
   gamma <- sort(gamma, decreasing = TRUE)
 
   max.iter.FUN <- max.iter
@@ -988,7 +994,7 @@ BITS.complete <- function(X, y,
                      lambda = lambda, alpha = alpha, nfolds = nfolds, nlambda = nlambda,
                      relax = relax, gamma2 = gamma2,
                      adjust.shady.int = adjust.shady.int, term.select = term.select,
-                     negate = negate, search.algo = "complete", max.iter = max.iter.FUN,
+                     negate = negate, max.iter = max.iter.FUN,
                      set_vars = set_vars, reuse.terms = reuse.terms)
   if(reuse.terms) set_vars <- null.model$set_vars
   null.model$gamma <- 0
@@ -1006,7 +1012,7 @@ BITS.complete <- function(X, y,
                     lambda = lambda, alpha = alpha, nfolds = nfolds, nlambda = nlambda,
                     relax = relax, gamma2 = gamma2,
                     adjust.shady.int = adjust.shady.int, term.select = term.select,
-                    negate = negate, search.algo = "complete", max.iter = max.iter.FUN,
+                    negate = negate, max.iter = max.iter.FUN,
                     set_vars = set_vars, reuse.terms = reuse.terms)
       if(reuse.terms) set_vars <- model$set_vars
       model$gamma <- gamma[i]
@@ -1024,7 +1030,7 @@ BITS.complete <- function(X, y,
 }
 
 #' @export
-get.ideal.model <- function(models, X, y, choose = "min", metric = "dev") {
+get.ideal.model <- function(models, X, y, choose = "min", metric = "auc") {
   if(!inherits(models, "BITS.list")) stop("The first argument needs to be an object of class 'BITS.list' (generated using BITS.complete)!")
   y_bin <- setequal(unique(y), c(0, 1))
   per.observation <- !y_bin || metric == "dev"
@@ -1061,23 +1067,27 @@ get.ideal.model <- function(models, X, y, choose = "min", metric = "dev") {
 }
 
 #' @export
-cv.BITS <- function(X, y, Z = NULL,
-                    nfolds = 5, choose = "min",
-                    gmin = function(gmax) 0.0001 * gmax, steps = 50,
-                    ...) {
+cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
+                    gmin = function(gmax) 0.001 * gmax, gsteps = 50,
+                    choose = "min", metric = "auc", ...) {
   N <- nrow(X)
   y_bin <- setequal(unique(y), c(0, 1))
-  use_Z <- !is.null(Z)
+  if(y_bin) y <- as.integer(y)
   folds <- cut(seq(1, N), breaks=nfolds, labels=FALSE)
   shuffle <- sample(N)
   X_shuffle <- X[shuffle,]
   y_shuffle <- y[shuffle]
-  if(use_Z) Z_shuffle <- Z[shuffle,,drop=FALSE]
+  per.observation <- !y_bin || metric == "dev"
 
-  gamma <- gammaPath(X, y, Z, gmin = gmin, steps = steps)
+  gamma <- gammaPath(X, y, gmin = gmin, steps = gsteps)
+
   cv.res <- data.frame()
-  scores <- matrix(nrow = N, ncol = length(gamma))
-  lambdas <- matrix(nrow = nfolds, ncol = length(gamma))
+
+  if(per.observation)
+    scores <- matrix(Inf, nrow = N, ncol = length(gamma)+1)
+  else
+    scores <- matrix(Inf, nrow = nfolds, ncol = length(gamma)+1)
+  lambdas <- matrix(Inf, nrow = nfolds, ncol = length(gamma)+1)
 
   for(i in 1:nfolds) {
     test_ind <- which(folds == i, arr.ind = TRUE)
@@ -1086,39 +1096,45 @@ cv.BITS <- function(X, y, Z = NULL,
     y_train <- y_shuffle[train_ind]
     X_val <- X_shuffle[test_ind,,drop=FALSE]
     y_val <- y_shuffle[test_ind]
-    Z_train <- NULL -> Z_val
-    if(use_Z) {
-      Z_train <- Z_shuffle[train_ind,,drop=FALSE]
-      Z_val <- Z_shuffle[test_ind,,drop=FALSE]
-    }
 
-    for(j in 1:length(gamma)) {
-      model <- BITS(X_train, y_train, Z = Z_train, nfolds = 0,
-                    gamma = gamma[j], ...)
-      model$s <- get.ideal.penalty(model, X_val, y_val, Z = Z_val, choose = "min")$best.s
-      preds <- predict(model, X_val, Z = Z_val)
-      scores[test_ind, j] <- calcScorePerObservation(preds, y_val, y_bin)
-      lambdas[i, j] <- model$s
+    models <- BITS.complete(X_train, y_train, gamma = gamma, parallel = parallel, ...)
+
+    for(j in 1:length(models)) {
+      model <- models[[j]]
+
+      model$s <- get.ideal.penalty(model, X_val, y_val, choose = choose, metric = metric)$best.s
+      preds <- predict(model, X_val)
+      j2 <- which(c(0, gamma) == model$gamma)
+      lambdas[i, j2] <- model$s
+      if(per.observation)
+        scores[test_ind, j2] <- calcScorePerObservation(preds, y_val, y_bin)
+      else
+        scores[i, j2] <- 1 - logicDT::calcAUC(preds, y_val)
     }
   }
+
+  gamma <- c(0, gamma)
 
   for(j in 1:length(gamma)) {
     m <- mean(scores[,j])
-    se <- sd(scores[,j])/sqrt(length(scores[,j]))
     s <- exp(mean(log(lambdas[,j]))) # Geometric mean
-    cv.res <- rbind(cv.res, data.frame(gamma = gamma[j], s = s, score = m, se = se, score.plus.1se = m + se))
+    if(per.observation) {
+      se <- sd(scores[,j])/sqrt(length(scores[,j]))
+      cv.res <- rbind(cv.res, data.frame(g = gamma[j], s = s, score = m, se = se, score.plus.1se = m + se))
+    } else {
+      cv.res <- rbind(cv.res, data.frame(g = gamma[j], s = s, score = m))
+    }
   }
 
   min.ind <- which.min(cv.res$score)
-  if(choose == "1se") {
+  if(choose == "1se" && per.observation) {
     max.val <- cv.res$score.plus.1se[min.ind]
     min.ind <- min(which(cv.res$score <= max.val))
   }
 
   best.gamma <- gamma[min.ind]; best.s <- cv.res$s[min.ind]
 
-  model <- BITS(X, y, Z = Z, nfolds = 0,
-                gamma = best.gamma, lambda = best.s, ...)
+  model <- BITS(X, y, nfolds = 0, gamma = best.gamma, lambda = best.s, ...)
   cv <- list(best.gamma = best.gamma, best.s = best.s, cv.res = cv.res)
   model$cv <- cv
   return(model)
