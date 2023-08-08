@@ -144,15 +144,6 @@ BITS <- function(X, y,
 }
 
 #' @export
-predict.intstump <- function(model, X, neg.offset) {
-  coef <- model$model$coef
-  if(length(coef) == 1) return(rep(coef, nrow(X)))
-  vars <- model$vars
-  dm <- cbind(1, getDesignMatrix(X, vars, neg.offset)) # matrix(vars, nrow=1)
-  return(as.numeric(dm %*% matrix(coef, ncol=1)))
-}
-
-#' @export
 #' @importFrom glmnet predict.glmnet
 predict.BITS <- function(model, X) {
   dm <- getDesignMatrix(X, model$disj, model$neg.offset)
@@ -179,53 +170,52 @@ dontNegateSinglePredictors <- function(disj) {
   disj
 }
 
-ITS <- function(X, y, neg_offset, max_vars, gamma, max_iter, adjust_shady_int) {
-  completeSearch(X, y, neg_offset, max_vars, gamma, NULL, FALSE, max_iter,
-                 TRUE, adjust_shady_int)
-}
+#' @export
+intstump <- function(X, y, negate = TRUE, max.vars = 3, gamma = NULL, max.iter = function(p) 4*max.vars*p, adjust.shady.int = TRUE) {
+  p <- ncol(X)
+  max.iter <- max.iter(2*p)
+  neg.offset <- rep(0, p)
+  if(is.logical(negate) && negate) {
+    ranges <- apply(X, 2, range)
+    to.negate <- ranges[1,] == 0
+    neg.offset[to.negate] <- ranges[2, to.negate]
+  } else if(length(negate) == p) {
+    neg.offset <- negate
+  }
+  set_vars <- NULL
+  X.factors <- apply(X, 2, function(x) max(abs(x)))
+  X.factors[X.factors <= 1e-10] <- 1
+  X2 <- X/matrix(X.factors, nrow=nrow(X), ncol=ncol(X), byrow=TRUE)
+  if(max.iter <= 0) set_vars <- initializeTerms(X2, neg_offset = rep(1, p), max_vars = max.vars)
 
-#' @importFrom stats lm.fit predict.glm gaussian binomial
-greedy.fit.old <- function(X, y, Z = NULL, max.vars = 3, gamma = 0.01, force.model = FALSE) {
-  p <- ncol(X); N <- nrow(X)
-  use.Z <- !is.null(Z)
-  vars <- integer()
-  y_bin <- !any(!(y %in% 0:1))
-  if(y_bin) fam <- gaussian() else fam <- binomial(link = "logit")
+  yy <- mean(y)
+  y2 <- y - yy
+  stump <- completeSearch(X2, y2, rep(1, p), max.vars, gamma, set_vars, FALSE, max.iter,
+                          TRUE, adjust.shady.int)
+  stump$preds <- stump$preds + yy
+  stump$model$preds <- stump$model$preds + yy
 
-  best.vars <- vars
-  best.mod <- lm.fit(matrix(1, nrow = N), y)
-  class(best.mod) <- "glm"
-  best.preds <- predict(best.mod, type = "response")
-  best.score <- best.mod$deviance
-  best.score <- calcScore(best.preds, y, y_bin)
-
-  for(i in 1:max.vars) {
-    found.better.model <- FALSE
-    vars <- best.vars
-    for(j in 1:(2*p)) {
-      k <- ifelse(j <= p, j, -j)
-      vars[i] <- k
-      X.tmp <- X[,vars,drop=FALSE]
-      X.tmp[,vars < 0,drop=FALSE] <- 1 - X.tmp[,vars < 0,drop=FALSE]
-      interaction.feature <- apply(X.tmp, 1, prod)
-      if(!use.Z)
-        dm <- cbind(1, interaction.feature)
-      else
-        dm <- cbind(1, interaction.feature, Z, Z * interaction.feature)
-      mod <- lm.fit(dm, y)
-      class(mod) <- "glm"
-      preds <- predict(mod, type = "response")
-      score <- mod$deviance + gamma * i
-      score <- calcScore(preds, y, y_bin) + gamma * i
-      if(score <= best.score || (i == 1 && !found.better.model && force.model)) {
-        best.score <- score; best.vars <- vars; best.mod <- mod; best.preds <- preds
-        found.better.model <- TRUE
-      }
-    }
-    if(!found.better.model) break
+  # Adjust intercept (because y was centered)
+  stump$model$coef[1] <- stump$model$coef[1] + yy
+  # Adjust coefficients (because X was scaled to [0, 1])
+  vars <- stump$vars
+  for(i in 1:nrow(vars)) {
+    v <- abs(vars[i,]); v <- v[!is.na(v)]
+    stump$model$coef[1+i] <- stump$model$coef[1+i]/prod(X.factors[v])
   }
 
-  return(list(score = best.score, model = best.mod, preds = best.preds, vars = best.vars))
+  class(stump) <- "intstump"
+  stump$neg.offset <- neg.offset
+  stump
+}
+
+#' @export
+predict.intstump <- function(model, X) {
+  coef <- model$model$coef
+  if(length(coef) == 1) return(rep(coef, nrow(X)))
+  vars <- model$vars
+  dm <- cbind(1, getDesignMatrix(X, vars, model$neg.offset))
+  return(as.numeric(dm %*% matrix(coef, ncol=1)))
 }
 
 calcScore <- function(preds, y, y_bin) {
