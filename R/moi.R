@@ -1,29 +1,27 @@
+#' @importFrom fastglm fastglm
+#' @importFrom stats glm anova binomial gaussian pchisq
 #' @export
-MOI <- function(X, y, Z = NULL, fast = FALSE) {
+MOI <- function(X, y, fast = FALSE) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X); N <- nrow(X)
   modes <- rep("A", p)
   if(y_bin) fam <- binomial() else fam <- gaussian()
   form.full <- y ~ A; form.red <- y ~ 1
-  if(!is.null(Z)) {
-    form.full <- as.formula(paste("y ~", paste("A*Z[,", 1:ncol(Z), "]", sep="", collapse = " + ")))
-    form.red <- as.formula(paste("y ~", paste("Z[,", 1:ncol(Z), "]", sep="", collapse = " + ")))
-  }
-  if(fast && is.null(Z)) {
-    mod.red <- fastglm::fastglm(matrix(1,ncol=1,nrow=N), y, family = fam)
+  if(fast) {
+    mod.red <- fastglm(matrix(1,ncol=1,nrow=N), y, family = fam)
     for(i in 1:p) {
       A <- X[,i]
-      mod.A <- fastglm::fastglm(cbind(1, A), y, family = fam)
+      mod.A <- fastglm(cbind(1, A), y, family = fam)
       llr.stat <- 2*as.numeric(logLik(mod.A) - logLik(mod.red))
       p.A <- 1-pchisq(llr.stat, 1)
 
       A <- as.numeric(X[,i] > 0)
-      mod.D <- fastglm::fastglm(cbind(1, A), y, family = fam)
+      mod.D <- fastglm(cbind(1, A), y, family = fam)
       llr.stat <- 2*as.numeric(logLik(mod.D) - logLik(mod.red))
       p.D <- 1-pchisq(llr.stat, 1)
 
       A <- as.numeric(X[,i] == 2)
-      mod.R <- fastglm::fastglm(cbind(1, A), y, family = fam)
+      mod.R <- fastglm(cbind(1, A), y, family = fam)
       llr.stat <- 2*as.numeric(logLik(mod.R) - logLik(mod.red))
       p.R <- 1-pchisq(llr.stat, 1)
 

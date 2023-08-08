@@ -15,5 +15,5 @@ Description: A statistical learning procedure that fits linear interaction
 License: MIT + file LICENSE
 Encoding: UTF-8
 RoxygenNote: 7.1.2
-Imports: Rcpp
+Imports: Rcpp, foreach, glmnet, fastglm, logicDT, stats, utils
 LinkingTo: Rcpp, RcppArmadillo
