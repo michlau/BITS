@@ -1,6 +1,6 @@
 Package: BITS
 Type: Package
-Title: Fitting Linear Interaction Models
+Title: Boosting Interaction Tree Stumps
 Version: 1.0.0
 Authors@R: person("Michael", "Lau", email = "michael.lau@hhu.de",
   role = c("aut", "cre"), comment = c(ORCID = "0000-0002-5327-8351"))
