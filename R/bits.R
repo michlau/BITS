@@ -1,15 +1,125 @@
+#' Boosting interaction tree stumps
+#'
+#' The main function that fits BITS models.
+#'
+#' BITS is a statistical learning procedure that fits generalized linear models
+#' and autonomously detects and incorporates interaction effects.
+#' Gradient boosting is employed using interaction tree stumps as base learner.
+#' Interaction tree stumps, i.e., decision tree stumps or simple linear
+#' regression models that include a marginal effect or an interaction effect,
+#' are fitted either by a complete search over all possible interaction terms
+#' of up to maximum interaction order \code{max.vars}. If a higher-dimensional
+#' task is considered, a hybrid between a greedy and a complete search should be
+#' carried out limiting the maximum number of search iterations.
+#' For controlling model complexity, long interactions are penalized using the
+#' hyperparameter \code{gamma}.
+#' Furthermore, the boosted model is pruned to the most important terms using
+#' a relaxed lasso/elastic net.
+#'
+#' The main function \code{BITS} is designed to use in conjunction with a fixed
+#' \code{gamma} value.
+#' Alternatively, the function \code{BITS.complete} can be used that trains
+#' \code{BITS} models on a grid of \code{gamma} and \code{lambda} values.
+#'
+#' \code{BITS.complete} can compute the \code{gamma}-paths in parallel.
+#' For parallel computing, a cluster has to be registered beforehand, e.g., via
+#' \preformatted{
+#'  cl <- parallel::makeCluster(4) # Using 4 threads
+#'  doParallel::registerDoParallel(cl)
+#' }
+#'
+#' The function \code{intstump} fits a single interaction tree stump.
+#'
+#' @param X Matrix or data frame of \eqn{p} input variables
+#' @param y Numeric vector of a binary or continuous outcome
+#' @param max.vars Maximum interaction order
+#' @param gamma Penalty value for penalizing long interaction terms
+#' @param boosting.iter Number of boosting iterations
+#' @param learning.rate Learning rate in gradient boosting
+#' @param lambda Sequence of lasso/elastic net penalties for pruning the
+#'   identified terms/fitting the final model
+#' @param alpha Elastic net balancing parameter between the lasso and the ridge
+#'   penalty
+#' @param nfolds Number of cross-validation folds if the final lasso/elastic net
+#'   shall be fitted using cross-validation
+#' @param nlambda Number of considered lasso/elastic net penalty values if no
+#'   \code{lambda} sequence is provided
+#' @param relax Shall a relaxed lasso be fitted?
+#' @param gamma2 Relaxed lasso balancing parameter between the lasso fit and
+#'   the unpenalized fit
+#' @param adjust.shady.int Shall adjustment for shady interactions be performed?
+#' @param term.select Type of final term selection. Either \code{"elnet"} for
+#'   using an elastic net/lasso (default) or \code{"step"} for performing a
+#'   stepwise regression.
+#' @param negate Shall negations of input variables also be considered? Default
+#'   is \code{TRUE} and uses the maxima of each input variable for negations.
+#'   Alternatively, a numeric vector of length \eqn{p} can be supplied that
+#'   specifies the negation offsets for all input variables, i.e., that
+#'   specifies \eqn{m_j} for the negated variable \eqn{X_j^c = m_j-X_j}.
+#' @param max.iter A function taking one argument -- the number \eqn{p} of input
+#'   variables -- that returns the maximum number of search iterations in
+#'   fitting interaction tree stumps. At least \eqn{\code{max.vars} \cdot p}
+#'   should be conducted for performing a greedy search. For performing a
+#'   complete search, a negative number should be returned by this function.
+#'   To decide if a complete search is feasible, the function
+#'   \code{\link{calcNoPossibleTerms}} can be used to determine the size of the
+#'   search space.
+#' @param reuse.terms Shall the search space be reused, and hence, also be
+#'   returned? Internal argument only used for the complete search.
+#' @param set_vars The complete search space as a C++ object. Internal argument
+#'   only used for the complete search.
+#' @param parallel Shall parallel computation be enabled?
+#' @param gmin Ratio of the minimum \code{gamma} value/maximum \code{gamma} value
+#' @param gsteps Number of \code{gamma} values
+#' @return The function \code{BITS} returns an object of class \code{BITS}.
+#'   This is a list containing
+#'   \item{\code{lin.mod}}{The linear model of identified terms that was fitted
+#'     using the method specified via \code{term.select}}
+#'   \item{\code{disj}}{A matrix of the identified terms. Each row corresponds
+#'     to a single term and each entry corresponds to the column index in \code{X}.
+#'     Negative values indicate negations. Missing values mean that the term
+#'     does not contain any more variables.}
+#'   \item{\code{s}}{Chosen value for the lasso/elastic net term inclusion
+#'     penalty \code{lambda}. Automatically set if cross-validation (through
+#'     \code{nfolds}) is employed. Otherwise, should be manually set to the
+#'     desired value after fitting the BITS model. The function
+#'     \code{\link{get.ideal.penalty}} can be used for determining the ideal
+#'     \code{lambda} penalty using independent validation data.}
+#'   \item{\code{y_bin}}{Boolean whether the outcome is binary}
+#'   \item{\code{neg.offset}}{Numeric vector of length \eqn{p} containing the
+#'     identified or supplied negation offsets}
+#'   \item{\code{gamma2}}{The relaxed lasso balancing parameter between the
+#'     lasso fit and the unpenalized fit}
+#'   \item{\code{evaluated.terms}}{Number of (completely) evaluated terms in all
+#'     interaction tree stump fittings}
+#'   \item{\code{possible.terms}}{Number of possible terms for fitting
+#'     interaction tree stumps}
+#'   \item{\code{set_vars}}{Search space as a C++ object. Only for internal
+#'     use.}
+#'   The function \code{BITS.complete} returns an object of class
+#'   \code{BITS.list}, which is a list of fitted \code{BITS} models for different
+#'   \code{gamma} values. The \code{gamma} value for each model in this list can
+#'   be accessed via \code{$gamma}.
+#' @example examples/toy.R
+#' @references
+#' \itemize{
+#'   \item Lau, M., Schikowski, T. & Schwender, H. (2023).
+#'   Boosting interaction tree stumps. To be submitted.
+#' }
+#'
 #' @export
 #' @importFrom glmnet glmnet cv.glmnet relax.glmnet
 #' @importFrom stats as.formula glm step binomial gaussian
+#' @importFrom utils flush.console
 BITS <- function(X, y,
                  max.vars = 3, gamma = NULL,
                  boosting.iter = 50, learning.rate = 0.1,
                  lambda = NULL, alpha = 1, nfolds = 0, nlambda = 100,
                  relax = TRUE, gamma2 = 0.5,
-                 adjust.shady.int = TRUE, term.select = "glinternet",
+                 adjust.shady.int = TRUE, term.select = "elnet",
                  negate = TRUE,
                  max.iter = function(p) 4*max.vars*p,
-                 set_vars = NULL, reuse.terms = TRUE) {
+                 reuse.terms = TRUE, set_vars = NULL) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X)
   N <- nrow(X)
@@ -143,9 +253,24 @@ BITS <- function(X, y,
   return(ret)
 }
 
+#' Prediction for BITS models
+#'
+#' Supply new input data for predicting the outcome with a fitted
+#' BITS model.
+#'
+#' @param object Fitted BITS model. Usually a product of a call
+#'   to \code{\link{BITS}} or \code{\link{cv.BITS}}.
+#' @param X Matrix or data frame of input data. This
+#'   object should correspond to the input data for fitting
+#'   the model.
+#' @param ... Additional unused arguments
+#' @return A numeric vector of predictions. For binary outcomes,
+#'   this is a vector with estimates for \eqn{P(Y=1 \mid X = x)}.
+#'
 #' @export
 #' @importFrom glmnet predict.glmnet
-predict.BITS <- function(model, X) {
+predict.BITS <- function(object, X, ...) {
+  model <- object
   dm <- getDesignMatrix(X, model$disj, model$neg.offset)
   if(inherits(model$lin.mod, "glm")) {
     return(predict(model$lin.mod, as.data.frame(dm), type = "response"))
@@ -170,6 +295,7 @@ dontNegateSinglePredictors <- function(disj) {
   disj
 }
 
+#' @rdname BITS
 #' @export
 intstump <- function(X, y, negate = TRUE, max.vars = 3, gamma = NULL, max.iter = function(p) 4*max.vars*p, adjust.shady.int = TRUE) {
   p <- ncol(X)
@@ -209,8 +335,10 @@ intstump <- function(X, y, negate = TRUE, max.vars = 3, gamma = NULL, max.iter =
   stump
 }
 
+#' @rdname predict.BITS
 #' @export
-predict.intstump <- function(model, X) {
+predict.intstump <- function(object, X, ...) {
+  model <- object
   coef <- model$model$coef
   if(length(coef) == 1) return(rep(coef, nrow(X)))
   vars <- model$vars
@@ -238,6 +366,20 @@ getRho <- function(y, oldEstimates, evaluatedWeakLearners, y_bin) {
   }
 }
 
+#' Design matrix for the set of terms
+#'
+#' Transform the original predictor matrix X into the term design matrix
+#' which contains for each term a corresponding column.
+#'
+#' @param X The original predictor matrix or data frame of \eqn{p} input
+#'   variables
+#' @param disj The term matrix which can, e.g., be extracted from a
+#'   fitted \code{BITS} model via $disj
+#' @param neg.offset Numeric vector of length \eqn{p} that specifies the
+#'   negation offsets for all input variables, i.e., that specifies \eqn{m_j}
+#'   for the negated variable \eqn{X_j^c = m_j-X_j}
+#' @return The transformed design matrix
+#'
 #' @export
 getDesignMatrix <- function(X, disj, neg.offset) {
   p.new <- nrow(disj); N <- nrow(X)
@@ -258,6 +400,17 @@ getDesignMatrix <- function(X, disj, neg.offset) {
   return(dm)
 }
 
+#' Extract terms from a \code{BITS} model
+#'
+#' If the term inclusion/lasso penalty \code{lambda} has been set in
+#' \code{model$s}, the included terms can be extracted using this function.
+#'
+#' @param model A fitted \code{BITS} model
+#' @return A matrix of the included terms. Each row corresponds
+#'   to a single term and each entry corresponds to the column index in \code{X}.
+#'   Negative values indicate negations. Missing values mean that the term
+#'   does not contain any more variables.
+#'
 #' @export
 get.included.vars <- function(model) {
   lin.mod <- model$lin.mod
@@ -268,7 +421,7 @@ get.included.vars <- function(model) {
     if(inherits(lin.mod, "cv.glmnet")) lin.mod <- lin.mod$glmnet.fit
     # lambda.ind <- match(model$s, lin.mod$lambda)[1]
     zero.tol <- 1e-10
-    lambda.ind <- which(abs(model$s - lin.mod$lambda) < zero.tol)[1]
+    lambda.ind <- which.min(abs(model$s - lin.mod$lambda))
     beta <- as.numeric(lin.mod$beta[,lambda.ind])
     p.new <- nrow(model$disj)
     # disj <- model$disj[beta[1:p.new] != 0,,drop=FALSE]
@@ -277,7 +430,30 @@ get.included.vars <- function(model) {
   return(disj)
 }
 
-#' @importFrom stats sd
+#' Ideal term inclusion penalty
+#'
+#' Obtain the optimal \code{lambda} penalty for including identified terms in
+#' the final relaxed lasso/elastic net model.
+#' Independent validation data should be supplied to unbiasedly identify the
+#' right value.
+#'
+#' @param model A fitted \code{BITS} model
+#' @param X Matrix or data frame of \eqn{p} input variables (of validation data)
+#' @param y Numeric vector of a binary or continuous outcome (of validation data)
+#' @param choose \code{"min"} for choosing the \code{lambda} value yielding the
+#'   minimum cross-validation error (default). Alternatively, \code{"1se"} can
+#'   be used to obtain the highest \code{lambda} value such that its
+#'   cross-validation error is within 1 standard error of the minimum
+#'   cross-validation error.
+#' @param metric For binary outcomes, either "auc" (default) to use the area
+#'   under the curve as performance metric or "dev" to use the deviance as
+#'   performance metric
+#' @return A list containing
+#'   \item{\code{val.res}}{A data frame with validation errors for
+#'    different values of \code{lambda}}
+#'   \item{\code{best.s}}{The identified optimal value for \code{lambda}}
+#'
+#' @importFrom stats sd predict
 #' @importFrom logicDT calcAUC
 #' @export
 get.ideal.penalty <- function(model, X, y, choose = "min", metric = "auc") {
@@ -310,9 +486,9 @@ get.ideal.penalty <- function(model, X, y, choose = "min", metric = "auc") {
   return(list(val.res = val.res, best.s = best.s))
 }
 
-#' @importFrom stats sd
+#' @importFrom stats sd predict
 get.ideal.penalty2 <- function(model, X, y, choose = "min") {
-  if(!inherits(model$lin.mod, "relaxed")) return(get.ideal.penalty(model, X, y, Z, choose))
+  if(!inherits(model$lin.mod, "relaxed")) return(get.ideal.penalty(model, X, y, choose))
   lambda <- model$lin.mod$lambda
   gamma2 <- c(1, 0.75, 0.5, 0.25, 0)
   # preds <- list()
@@ -346,12 +522,10 @@ calcScorePerObservation <- function(preds, y, y_bin) {
   scores
 }
 
-#' @export
 custom.lm <- function(X, y) {
   customLm(X, y)
 }
 
-#' @export
 matrix.vector.mult <- function(Z, y) {
   matrixVectorMult(Z, y)
 }
@@ -405,6 +579,31 @@ getPredictorNames <- function(real_disj, sort_conj = FALSE) {
   return(disj2)
 }
 
+#' \code{gamma}-path computation
+#'
+#' Computes a path of \code{gamma} values to be used in \code{\link{BITS}}.
+#'
+#' The maximum \code{gamma} value is computed by
+#' \deqn{\code{gamma}_\mathrm{\max} = S_\mathrm{corr}(m_1),}
+#' where \eqn{S_\mathrm{corr}} is the correlation score and \eqn{m_1} is the
+#' optimal interaction tree stump containing only one input variable.
+#'
+#' The \code{gamma}-path is then obtained by computing \code{steps} equidistant
+#' steps on the logarithmic scale between \eqn{\code{gamma}_\mathrm{\max}} and
+#' \eqn{\code{gmin} \cdot \code{gamma}_\mathrm{\max}}.
+#'
+#' @param X Matrix or data frame of \eqn{p} input variables
+#' @param y Numeric vector of a binary or continuous outcome
+#' @param gmin Ratio of the minimum \code{gamma} value/maximum \code{gamma} value
+#' @param steps Number of \code{gamma} values
+#' @return A numeric vector containing the (decreasingly sorted) \code{gamma}
+#'   values
+#' @references
+#' \itemize{
+#'   \item Lau, M., Schikowski, T. & Schwender, H. (2023).
+#'   Boosting interaction tree stumps. To be submitted.
+#' }
+#'
 #' @export
 gammaPath <- function(X, y,
                       gmin = function(gmax) 0.001 * gmax,
@@ -472,6 +671,7 @@ combine.custom <- function(a, b) {
 #' @importFrom foreach `%dopar%` `%do%`
 ParMethod <- function(x) if(x) {`%dopar%`} else {`%do%`}
 
+#' @rdname BITS
 #' @importFrom foreach getDoParWorkers foreach
 #' @export
 BITS.complete <- function(X, y,
@@ -479,7 +679,7 @@ BITS.complete <- function(X, y,
                           boosting.iter = 50, learning.rate = 0.1,
                           lambda = NULL, alpha = 1, nfolds = 0, nlambda = 100,
                           relax = TRUE, gamma2 = 0.5,
-                          adjust.shady.int = TRUE, term.select = "glinternet",
+                          adjust.shady.int = TRUE, term.select = "elnet",
                           negate = TRUE,
                           max.iter = function(p) -1,
                           reuse.terms = TRUE, parallel = TRUE,
@@ -506,13 +706,14 @@ BITS.complete <- function(X, y,
                      relax = relax, gamma2 = gamma2,
                      adjust.shady.int = adjust.shady.int, term.select = term.select,
                      negate = negate, max.iter = max.iter.FUN,
-                     set_vars = set_vars, reuse.terms = reuse.terms)
+                     reuse.terms = reuse.terms, set_vars = set_vars)
   if(reuse.terms) set_vars <- null.model$set_vars
   null.model$gamma <- 0
 
   if(reuse.terms || max.iter <= 0 || getDoParWorkers() == 1) parallel <- FALSE
   `%op%` <- ParMethod(parallel)
   should.break <- length(gamma) + 1
+  i <- 0
   models <- foreach(i=1:length(gamma), .combine=combine.custom, .export = c()) %op%
   {
     if(i < should.break) {
@@ -523,7 +724,7 @@ BITS.complete <- function(X, y,
                     relax = relax, gamma2 = gamma2,
                     adjust.shady.int = adjust.shady.int, term.select = term.select,
                     negate = negate, max.iter = max.iter.FUN,
-                    set_vars = set_vars, reuse.terms = reuse.terms)
+                    reuse.terms = reuse.terms, set_vars = set_vars)
       if(reuse.terms) set_vars <- model$set_vars
       model$gamma <- gamma[i]
 
@@ -539,7 +740,32 @@ BITS.complete <- function(X, y,
   models
 }
 
-#' @importFrom stats sd
+#' Ideal hyperparameters
+#'
+#' Obtain the optimal \code{gamma} and \code{lambda} penalties.
+#' Independent validation data should be supplied to unbiasedly identify the
+#' right values.
+#'
+#' @param models An object of class \code{BITS.list}, which is a list of fitted
+#'   \code{BITS} models. This object can be obtained using
+#'   \code{\link{BITS.complete}}.
+#' @param X Matrix or data frame of \eqn{p} input variables (of validation data)
+#' @param y Numeric vector of a binary or continuous outcome (of validation data)
+#' @param choose \code{"min"} for choosing the \code{gamma} and \code{lambda}
+#'   values yielding the minimum cross-validation error (default). Alternatively,
+#'   \code{"1se"} can be used to obtain the least complex model
+#'   (high \code{gamma} and high \code{lambda}) such that its cross-validation
+#'   error is within 1 standard error of the minimum cross-validation error.
+#' @param metric For binary outcomes, either "auc" (default) to use the area
+#'   under the curve as performance metric or "dev" to use the deviance as
+#'   performance metric
+#' @return A list containing
+#'   \item{\code{val.res}}{A data frame with validation errors for
+#'     different values of \code{gamma} and \code{lambda}}
+#'   \item{\code{best.g}}{The identified optimal value for \code{gamma}}
+#'   \item{\code{best.s}}{The identified optimal value for \code{lambda}}
+#'
+#' @importFrom stats sd predict
 #' @importFrom logicDT calcAUC
 #' @export
 get.ideal.model <- function(models, X, y, choose = "min", metric = "auc") {
@@ -575,10 +801,44 @@ get.ideal.model <- function(models, X, y, choose = "min", metric = "auc") {
   }
 
   best.g <- val.res$g[min.ind]; best.s <- val.res$s[min.ind]
+  class(val.res) <- c("val.performance", "data.frame")
   return(list(val.res = val.res, best.g = best.g, best.s = best.s))
 }
 
-#' @importFrom stats sd
+#' Cross-validation for BITS
+#'
+#' Performing k-fold cross-validation to obtain a BITS model with tuned
+#' \code{gamma} and \code{lambda} penalty parameters.
+#'
+#' For parallel computing, a cluster has to be registered beforehand, e.g., via
+#' \preformatted{
+#'  cl <- parallel::makeCluster(4) # Using 4 threads
+#'  doParallel::registerDoParallel(cl)
+#' }
+#'
+#' @param X Matrix or data frame of \eqn{p} input variables
+#' @param y Numeric vector of a binary or continuous outcome
+#' @param nfolds Number of cross-validation folds
+#' @param parallel Shall parallel computation be enabled?
+#' @param gmin Ratio of the minimum \code{gamma} value/maximum \code{gamma} value
+#' @param gsteps Number of \code{gamma} values
+#' @param choose \code{"min"} for choosing the model yielding the minimum
+#'   cross-validation error (default). Alternatively, \code{"1se"} can be used
+#'   to obtain the least complex model (high \code{gamma} and high \code{lambda})
+#'   such that its cross-validation error is within 1 standard error of the
+#'   minimum cross-validation error.
+#' @param metric For binary outcomes, either "auc" (default) to use the area
+#'   under the curve as performance metric or "dev" to use the deviance as
+#'   performance metric
+#' @param ... Arguments passed to \code{\link{BITS.complete}}
+#' @return A \code{BITS} model. Additionally, \code{$cv} contains a list
+#'   consisting of
+#'  \item{\code{best.gamma}}{The identified optimal value for \code{gamma}}
+#'  \item{\code{best.s}}{The identified optimal value for \code{lambda}}
+#'  \item{\code{cv.res}}{A data frame with cross-validation errors for
+#'    different values of \code{gamma} and \code{lambda}}
+#'
+#' @importFrom stats sd predict
 #' @importFrom logicDT calcAUC
 #' @export
 cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
@@ -615,11 +875,12 @@ cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
 
     for(j in 1:length(models)) {
       model <- models[[j]]
-
-      model$s <- get.ideal.penalty(model, X_val, y_val, choose = choose, metric = metric)$best.s
+      s <- get.ideal.penalty(model, X_val, y_val, choose = choose, metric = metric)$best.s
+      model$s <- s
       preds <- predict(model, X_val)
-      j2 <- which(c(0, gamma) == model$gamma)
-      lambdas[i, j2] <- model$s
+      zero.tol <- 1e-10
+      j2 <- which(abs(c(gamma, 0) - model$gamma) < zero.tol)
+      lambdas[i, j2] <- s
       if(per.observation)
         scores[test_ind, j2] <- calcScorePerObservation(preds, y_val, y_bin)
       else
@@ -627,7 +888,7 @@ cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
     }
   }
 
-  gamma <- c(0, gamma)
+  gamma <- c(gamma, 0)
 
   for(j in 1:length(gamma)) {
     m <- mean(scores[,j])
@@ -639,6 +900,8 @@ cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
       cv.res <- rbind(cv.res, data.frame(g = gamma[j], s = s, score = m))
     }
   }
+  cv.res <- cv.res[order(cv.res$g, decreasing = TRUE),]
+  rownames(cv.res) <- 1:nrow(cv.res)
 
   min.ind <- which.min(cv.res$score)
   if(choose == "1se" && per.observation) {
@@ -649,22 +912,43 @@ cv.BITS <- function(X, y, nfolds = 5, parallel = TRUE,
   best.gamma <- gamma[min.ind]; best.s <- cv.res$s[min.ind]
 
   model <- BITS(X, y, nfolds = 0, gamma = best.gamma, lambda = best.s, ...)
+  class(cv.res) <- c("val.performance", "data.frame")
   cv <- list(best.gamma = best.gamma, best.s = best.s, cv.res = cv.res)
   model$cv <- cv
   return(model)
 }
 
-#' @export plot.val.performance
-plot.val.performance <- function(val.res) {
-  library(ggplot2)
-  p <- ggplot(val.res, aes(x=log(s), y=score, color = log(g), group = g)) +
-    geom_line() +
-    theme_bw() +
-    xlab(expression(log(lambda))) + ylab("Score") +
-    scale_colour_gradient(name = expression(log(gamma)), low="#00B4EF", high="#FF6C91")
+#' Hyperparameter plot
+#'
+#' Creates a plot showing the validation data performances for different
+#' hyperparameter choices.
+#'
+#' @param x An object of class \code{val.performance}, which is a data
+#'   frame with validation data performances for different \code{gamma} and
+#'   \code{lambda} values. Can be obtained via \code{\link{BITS.complete}}.
+#' @param ... Additional unused arguments
+#' @return A \code{ggplot} depicting the validation data performances
+#'
+#' @export
+plot.val.performance <- function(x, ...) {
+  if(!requireNamespace("ggplot2", quietly = TRUE)) stop("ggplot2 needs to be installed first!")
+  p <- ggplot2::ggplot(x, ggplot2::aes_string(x="log(s)", y="score", color = "log(g)", group = "g")) +
+    ggplot2::geom_line() +
+    ggplot2::theme_bw() +
+    ggplot2::xlab(expression(log(lambda))) + ggplot2::ylab("Score") +
+    ggplot2::scale_colour_gradient(name = expression(log(gamma)), low="#00B4EF", high="#FF6C91")
   p
 }
 
+#' Number of possible terms
+#'
+#' Calculates the possible number of marginal terms and interaction terms.
+#'
+#' @param p Number of input variables
+#' @param max.vars Maximum interaction order
+#' @param negate Shall negations of input variables also be considered?
+#' @return Number of possible terms
+#'
 #' @export
 calcNoPossibleTerms <- function(p, max.vars, negate = TRUE) {
   if(!negate) return(sum(choose(p, 1:max.vars)))

@@ -1,5 +1,38 @@
+#' Modes of inheritance
+#'
+#' Determining the most plausible modes of inheritance (MOIs).
+#'
+#' For each considered SNP (single nucleotide polymorphism) and each considered
+#' MOI (additive, dominant, and recessive), likelihood-ratio tests are carried
+#' out testing the association of the SNP in the considered MOI with the
+#' outcome. For each SNP, the MOI that yields the highest association with the
+#' outcome, i.e., the MOI that yields the lowest p-value, is returned.
+#'
+#' @param X Matrix or data frame of \eqn{p} SNPs coded as 0,1,2
+#' @param y Numeric vector of a binary or continuous outcome
+#' @param fast Shall fastglm instead of glm be employed for model fitting?
+#'   Default is \code{FALSE}. However, for high-dimensional problems, setting
+#'   \code{fast = TRUE} is recommended.
+#' @return A character vector of length \eqn{p} containing the identified MOI,
+#'   where \code{"A"} is the additive MOI, \code{"D"} is the dominant MOI, and
+#'   \code{"R"} is the recessive MOI
+#' @references
+#' \itemize{
+#'   \item Lau, M., Schikowski, T. & Schwender, H. (2023).
+#'   Boosting interaction tree stumps. To be submitted.
+#'   \item Scherer, N., Sekula, P., Pfaffelhuber, P. & Schlosser, P. (2021).
+#'   pgainsim: an R-package to assess the mode of inheritance for quantitative
+#'   trait loci in GWAS. Bioinformatics, 37(18):3061–3063.
+#'   \doi{https://doi.org/10.1093/bioinformatics/btab150}
+#'   \item Petersen, A. K., Krumsiek, J., Wägele, B., Theis, F. J., Wichmann,
+#'   H.-E., Gieger, C. & Suhre, K. (2012). On the hypothesis-free testing of
+#'   metabolite ratios in genome-wide and metabolome-wide association studies.
+#'   BMC Bioinformatics, 13:120, 2012.
+#'   \doi{https://doi.org/10.1186/1471-2105-13-120}
+#' }
+#'
 #' @importFrom fastglm fastglm
-#' @importFrom stats glm anova binomial gaussian pchisq
+#' @importFrom stats glm anova binomial gaussian pchisq logLik
 #' @export
 MOI <- function(X, y, fast = FALSE) {
   y_bin <- !any(!(y %in% 0:1))
@@ -54,6 +87,15 @@ MOI <- function(X, y, fast = FALSE) {
   modes
 }
 
+#' Applying modes of inheritance
+#'
+#' Transform SNPs according to the supplied modes of inheritance (MOIs).
+#'
+#' @param X Matrix or data frame of SNPs coded as 0,1,2
+#' @param modes Character vector of MOIs that can be obtained using
+#'   \code{\link{MOI}}.
+#' @return A matrix or data frame of SNPs using the given MOIs
+#'
 #' @export
 applyMOI <- function(X, modes) {
   X[,modes == "D"] <- X[,modes == "D"] > 0
