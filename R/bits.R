@@ -64,8 +64,6 @@
 #'   To decide if a complete search is feasible, the function
 #'   \code{\link{calcNoPossibleTerms}} can be used to determine the size of the
 #'   search space.
-#' @param reuse.terms Shall the search space be reused, and hence, also be
-#'   returned? Internal argument only used for the complete search.
 #' @param set_vars The complete search space as a C++ object. Internal argument
 #'   only used for the complete search.
 #' @param parallel Shall parallel computation be enabled?
@@ -119,7 +117,7 @@ BITS <- function(X, y,
                  adjust.shady.int = TRUE, term.select = "elnet",
                  negate = TRUE,
                  max.iter = function(p) 4*max.vars*p,
-                 reuse.terms = TRUE, set_vars = NULL) {
+                 set_vars = NULL) {
   y_bin <- !any(!(y %in% 0:1))
   p <- ncol(X)
   N <- nrow(X)
@@ -155,6 +153,12 @@ BITS <- function(X, y,
   })
   max.iter <- max.iter(2*p)
   if(max.iter <= 0 && is.null(set_vars)) set_vars <- initializeTerms(X2, neg_offset = rep(1, p), max_vars = max.vars)
+  if(max.iter > 0) {
+    reuse.terms <- FALSE
+    set_vars <- NULL
+  } else {
+    reuse.terms <- TRUE
+  }
   evaluated.terms <- rep(0, boosting.iter) -> possible.terms
 
   for(i in 1:boosting.iter) {
@@ -682,7 +686,7 @@ BITS.complete <- function(X, y,
                           adjust.shady.int = TRUE, term.select = "elnet",
                           negate = TRUE,
                           max.iter = function(p) -1,
-                          reuse.terms = TRUE, parallel = TRUE,
+                          parallel = TRUE,
                           gmin = function(gmax) 0.001 * gmax, gsteps = 50) {
   X <- as.matrix(X)
   X2 <- apply(X, 2, function(x) {
@@ -694,10 +698,13 @@ BITS.complete <- function(X, y,
 
   max.iter.FUN <- max.iter
   max.iter <- max.iter.FUN(2*ncol(X))
-  if(max.iter <= 0)
+  if(max.iter <= 0) {
     set_vars <- initializeTerms(X2, neg_offset = rep(1, ncol(X)), max_vars = max.vars)
-  else
+    reuse.terms <- TRUE
+  } else {
     set_vars <- NULL
+    reuse.terms <- FALSE
+  }
 
   null.model <- BITS(X, y,
                      max.vars = max.vars, gamma = 0,
@@ -706,14 +713,14 @@ BITS.complete <- function(X, y,
                      relax = relax, gamma2 = gamma2,
                      adjust.shady.int = adjust.shady.int, term.select = term.select,
                      negate = negate, max.iter = max.iter.FUN,
-                     reuse.terms = reuse.terms, set_vars = set_vars)
+                     set_vars = set_vars)
   if(reuse.terms) set_vars <- null.model$set_vars
   null.model$gamma <- 0
 
   if(reuse.terms || max.iter <= 0 || getDoParWorkers() == 1) parallel <- FALSE
   `%op%` <- ParMethod(parallel)
   should.break <- length(gamma) + 1
-  i <- 0
+  i <- 0; rm(i)
   models <- foreach(i=1:length(gamma), .combine=combine.custom, .export = c()) %op%
   {
     if(i < should.break) {
@@ -724,7 +731,7 @@ BITS.complete <- function(X, y,
                     relax = relax, gamma2 = gamma2,
                     adjust.shady.int = adjust.shady.int, term.select = term.select,
                     negate = negate, max.iter = max.iter.FUN,
-                    reuse.terms = reuse.terms, set_vars = set_vars)
+                    set_vars = set_vars)
       if(reuse.terms) set_vars <- model$set_vars
       model$gamma <- gamma[i]
 
