@@ -4,6 +4,8 @@
 # BITS
 
 <!-- badges: start -->
+
+[![R-CMD-check](https://github.com/michlau/BITS/workflows/R-CMD-check/badge.svg)](https://github.com/michlau/BITS/actions)
 <!-- badges: end -->
 
 BITS (boosting interaction tree stumps) is a statistical learning method
