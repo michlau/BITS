@@ -9,9 +9,9 @@
 <!-- badges: end -->
 
 BITS (boosting interaction tree stumps) is a statistical learning method
-that fits linear interaction models such as $$
-\mathbb{E}[Y | \boldsymbol{X} = \boldsymbol{x}] = \beta_0 + \beta_1 x_1 + \beta_2 x_3 x_{42} + \beta_3 x_9 + \beta_4 x_1 x_5 x_{10}.
-$$ The main idea is to use interaction tree stumps, i.e., decision tree
+that fits linear interaction models such as
+$$\mathbb{E}[Y | \boldsymbol{X} = \boldsymbol{x}] = \beta_0 + \beta_1 x_1 + \beta_2 x_3 x_{42} + \beta_3 x_9 + \beta_4 x_1 x_5 x_{10}.$$
+The main idea is to use interaction tree stumps, i.e., decision tree
 stumps or simple linear regression models that may depend on one single
 input feature or interaction term, as base learner in gradient boosting.
 
