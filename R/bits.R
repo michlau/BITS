@@ -943,7 +943,8 @@ plot.val.performance <- function(x, ...) {
     ggplot2::geom_line() +
     ggplot2::theme_bw() +
     ggplot2::xlab(expression(log(lambda))) + ggplot2::ylab("Score") +
-    ggplot2::scale_colour_gradient(name = expression(log(gamma)), low="#00B4EF", high="#FF6C91")
+    # ggplot2::scale_colour_gradient(name = expression(log(gamma)), low="#00B4EF", high="#FF6C91")
+    ggplot2::scale_colour_gradientn(name = expression(log(gamma)), colours = rev(grDevices::hcl.colors(7)))
   p
 }
 
