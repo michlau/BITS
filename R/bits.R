@@ -201,7 +201,10 @@ BITS <- function(X, y,
   cat("Boosting done\n")
 
   disj <- dontNegateSinglePredictors(disj)
-  disj.unique <- unique(t(apply(disj, 1, sort.int, method = "quick", na.last = TRUE)))
+  if(ncol(disj) > 1)
+    disj.unique <- unique(t(apply(disj, 1, sort.int, method = "quick", na.last = TRUE)))
+  else
+    disj.unique <- matrix(unique(sort.int(disj)), ncol=1)
   disj.unique <- disj.unique[rowMeans(is.na(disj.unique)) < 1,,drop=FALSE]
   disj.unique <- disj.unique[,colMeans(is.na(disj.unique)) < 1,drop=FALSE]
 
