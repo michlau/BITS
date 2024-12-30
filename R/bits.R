@@ -216,7 +216,6 @@ BITS <- function(X, y,
   dm <- getDesignMatrix(X, disj.unique, neg.offset)
 
   if(term.select == "step") {
-    n.terms <- nrow(disj.unique)
     dat <- data.frame(y = y, dm)
     if(y_bin) fam <- binomial() else fam <- gaussian()
     biggest <- as.formula(paste("y ~", paste(colnames(dm), sep="", collapse = " + ")))
@@ -227,7 +226,13 @@ BITS <- function(X, y,
     lin.mod2 <- step(glm(smallest, data = dat, family = fam), direction = "both",
                      scope = list(lower= smallest, upper = biggest), trace = 0)
     detected.terms <- names(lin.mod2$coefficients)[-(1:(tmp+1))]
-    final.formula <- as.formula(paste("y ~", paste(detected.terms, sep="", collapse = " + ")))
+    detected.terms.ind <- sort(match(detected.terms, colnames(dm)))
+
+    disj.unique <- disj.unique[detected.terms.ind,,drop=FALSE]
+    disj.unique <- disj.unique[,colMeans(is.na(disj.unique)) < 1,drop=FALSE]
+    dm <- getDesignMatrix(X, disj.unique, neg.offset)
+    dat <- data.frame(y = y, dm)
+    final.formula <- as.formula(paste("y ~", paste(colnames(dm), sep="", collapse = " + ")))
     lin.mod <- glm(final.formula, data = dat, family = fam)
     s <- NULL
   } else {
@@ -965,6 +970,81 @@ calcNoPossibleTerms <- function(p, max.vars, negate = TRUE) {
   if(!negate) return(sum(choose(p, 1:max.vars)))
   tmp <- sum(choose(2*p, 1:max.vars))
   tmp - sum(p*choose(2*(p-1), 0:(max.vars-2)))
+}
+
+#' @export
+print.BITS <- function(model, X.names = NULL, MOI = NULL, n.digits = 2, negation = "^c", SNP = FALSE, latex = FALSE) {
+  if(is.null(model$s) && !inherits(model$lin.mod, "glm")) {
+    class(model) <- "list"
+    print(model)
+  } else {
+    neg.offset <- model$neg.offset
+    disj <- model$disj
+
+    n.vars <- rowSums(!is.na(disj))
+    order.vecs <- list(a = n.vars)
+    for(i in 1:nrow(disj))
+      disj[i,] <- disj[i,][order(abs(disj[i,]))]
+    for(j in 1:ncol(disj))
+      order.vecs[[paste0("b", j)]] <- abs(disj[,j])
+    disj.order <- do.call(order, order.vecs)
+    disj <- disj[disj.order,,drop=FALSE]
+
+    beta <- as.numeric(coef(model$lin.mod, s=model$s))
+    if(inherits(model$lin.mod, "relaxed")) {
+      beta.unpenalized <- as.numeric(coef(model$lin.mod$relaxed, s=model$s))
+      beta <- (1-model$gamma2) * beta.unpenalized + model$gamma2 * beta
+    }
+    beta <- c(beta[1], beta[-1][disj.order])
+    zero.tol <- 1e-10
+    keep.ind <- which(abs(beta[-1]) > zero.tol)
+    beta <- sprintf(paste0("%.", n.digits, "f"), beta)
+
+    vars.strings <- disj2terms(disj, neg.offset, X.names=X.names, MOI=MOI, negation=negation, SNP=SNP, latex=latex)
+    beta.sub <- beta[-1][keep.ind]
+    vars.strings.sub <- vars.strings[keep.ind]
+    term.strings <- paste(beta.sub, vars.strings.sub, sep=ifelse(latex, " \\cdot ", " * "))
+    term.strings[!startsWith(term.strings, "-")] <- paste("+", term.strings[!startsWith(term.strings, "-")])
+    term.strings[startsWith(term.strings, "-")] <- paste("-", substring(term.strings[startsWith(term.strings, "-")], 2))
+    model.string <- paste(beta[1], paste(term.strings, collapse=" "))
+    if(model$y_bin)
+      model.string <- paste(ifelse(latex, "\\mathrm{logit}(P(Y=1)) =", "logit(P(Y=1)) ="), model.string)
+    else
+      model.string <- paste(ifelse(latex, "\\hat{Y} =", "Y ="), model.string)
+    cat(model.string)
+    cat("\n")
+  }
+}
+
+disj2terms <- function(disj, neg.offset, X.names = NULL, MOI = NULL, negation = "^c", SNP = FALSE, latex = FALSE) {
+  l <- character()
+  for(i in 1:nrow(disj)) {
+    l[i] <- ""
+    for(j in 1:ncol(disj)) {
+      if(is.na(disj[i, j]))
+        next
+      if(j > 1)
+        l[i] <- paste(l[i], ifelse(latex, "\\cdot", "*"))
+      if(!is.null(X.names))
+        letter <- paste0(ifelse(latex, "\\mathrm{", ""), X.names[abs(disj[i, j])], ifelse(latex, "}", ""))
+      else
+        letter <- ifelse(SNP, ifelse(latex, "\\mathrm{SNP}", "SNP"), "X")
+      var.string <- paste0(letter,
+                           ifelse((is.null(X.names) || !is.null(MOI)) && latex, "_{", ""),
+                           ifelse(is.null(X.names), abs(disj[i, j]), ""),
+                           ifelse(is.null(X.names) && !is.null(MOI) && latex, ",", ""),
+                           ifelse(!is.null(MOI), MOI[abs(disj[i, j])], ""),
+                           ifelse((is.null(X.names) || !is.null(MOI)) && latex, "}", ""))
+      if(disj[i, j] < 0) {
+        if(negation == "full")
+          var.string <- paste0("(", neg.offset[-disj[i, j]], "-", var.string, ")")
+        else
+          var.string <- paste0(var.string, "^c")
+      }
+      l[i] <- paste(l[i], var.string)
+    }
+  }
+  trimws(l)
 }
 
 memory.test <- function() {

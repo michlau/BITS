@@ -3,6 +3,7 @@
 S3method(plot,val.performance)
 S3method(predict,BITS)
 S3method(predict,intstump)
+S3method(print,BITS)
 export(BITS)
 export(BITS.complete)
 export(MOI)
