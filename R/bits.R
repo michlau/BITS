@@ -972,8 +972,31 @@ calcNoPossibleTerms <- function(p, max.vars, negate = TRUE) {
   tmp - sum(p*choose(2*(p-1), 0:(max.vars-2)))
 }
 
+#' Print BITS model
+#'
+#' Prints the fitted BITS model as a linear interaction model
+#'
+#' @param x Fitted BITS model. Usually a product of a call
+#'   to \code{\link{BITS}} or \code{\link{cv.BITS}}.
+#' @param X.names Optional character vector of original predictor names.
+#'   E.g., \code{X.names=colnames(X)}, where \code{X} is the original dataframe
+#'   or matrix of predictor values.
+#' @param MOI Optional character vector of modes of inheritance. Usually a
+#'   product of a call to \code{\link{MOI}}.
+#' @param n.digits Number of digits to print in the regression coefficients
+#' @param negation How to indicate variable negations? \code{negation="^c"}
+#'   simply indicates negations using superscript c and \code{negation="full"}
+#'   prints negations in more detail with the negation offset.
+#' @param SNP Boolean value to indicate if input variables should be printed as
+#'   SNP or more generically as X
+#' @param latex Boolean value to indicate if model should be printed in LaTeX
+#'   format
+#' @param ... Additional unused arguments
+#'
 #' @export
-print.BITS <- function(model, X.names = NULL, MOI = NULL, n.digits = 2, negation = "^c", SNP = FALSE, latex = FALSE) {
+#' @importFrom stats coef
+print.BITS <- function(x, X.names = NULL, MOI = NULL, n.digits = 2, negation = "^c", SNP = FALSE, latex = FALSE, ...) {
+  model <- x
   if(is.null(model$s) && !inherits(model$lin.mod, "glm")) {
     class(model) <- "list"
     print(model)
